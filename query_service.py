@@ -23,7 +23,6 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
-import database
 import config
 
 app = FastAPI(title="Query Service")
@@ -99,19 +98,14 @@ async def handle_query(req: QueryRequest):
     # Attach current schema snapshot for Validator
     request_envelope["schema"] = _schema_cache
 
-    # Send to Validator — last line of defense
+    # Send to Validator — validates and executes in one step
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"{config.URLS['validator']}/validate",
-            json=request_envelope
+            f"{config.URLS['validator']}/execute",
+            json=request_envelope,
+            timeout=30.0
         )
-        validation = r.json()
-
-    if not validation["valid"]:
-        return {"ok": False, "reason": validation["reason"]}
-
-    # Validation passed — execute
-    return await _execute(request_envelope)
+        return r.json()
 
 
 # --- Parser: structured CLI commands ---
@@ -163,49 +157,6 @@ def _parse(user_input: str) -> dict | None:
         return {"type": "schema_op", "action": "DROP", "target": parts[1], "payload": {}}
 
     return None  # fall through to LLM
-
-
-# --- Executor: runs validated requests ---
-async def _execute(envelope: dict) -> dict:
-    action = envelope["action"]
-    target = envelope["target"]
-    payload = envelope.get("payload", {})
-
-    if action == "SELECT":
-        return database.execute(f"SELECT * FROM {target}")
-
-    elif action == "INSERT":
-        values = payload.get("values", {})
-        cols = ", ".join(values.keys())
-        placeholders = ", ".join("?" for _ in values)
-        return database.execute(
-            f"INSERT INTO {target} ({cols}) VALUES ({placeholders})",
-            tuple(values.values())
-        )
-
-    # Schema ops go through Schema Manager (it owns the floor plan)
-    elif action == "CREATE_TABLE":
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"{config.URLS['schema']}/schema/create",
-                json={"table": target, "columns": payload.get("columns", {})}
-            )
-            return r.json()
-
-    elif action == "ALTER":
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"{config.URLS['schema']}/schema/alter",
-                json={"table": target, "add_columns": payload.get("add_columns", {})}
-            )
-            return r.json()
-
-    elif action == "DROP":
-        async with httpx.AsyncClient() as client:
-            r = await client.delete(f"{config.URLS['schema']}/schema/{target}")
-            return r.json()
-
-    return {"ok": False, "error": f"No executor for action: {action}"}
 
 
 if __name__ == "__main__":

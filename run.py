@@ -2,8 +2,8 @@
 run.py — starts all services as separate processes, then launches the CLI.
 
 Start order matters:
-  1. Schema Manager  (others depend on it at startup)
-  2. Validator
+  1. Validator       (sole DB gateway; Schema Manager depends on it at startup)
+  2. Schema Manager  (cache + pub/sub; Query Service subscribes on startup)
   3. LLM Service
   4. Query Service   (subscribes to Schema Manager on startup)
   5. CLI             (talks to Query Service)
@@ -64,16 +64,16 @@ if __name__ == "__main__":
     print("Starting services...")
 
     processes = []
-    processes.append(start_service("schema_manager", "schema_manager.py", config.PORTS["schema"]))
-    time.sleep(0.5)
     processes.append(start_service("validator",      "validator.py",      config.PORTS["validator"]))
+    time.sleep(0.5)
+    processes.append(start_service("schema_manager", "schema_manager.py", config.PORTS["schema"]))
     processes.append(start_service("llm_service",    "llm_service.py",    config.PORTS["llm"]))
     time.sleep(0.5)
     processes.append(start_service("query_service",  "query_service.py",  config.PORTS["query"]))
 
     # Wait for all services to be ready
-    wait_for_service(f"{config.URLS['schema']}/schema",    "Schema Manager")
     wait_for_service(f"{config.URLS['validator']}/docs",   "Validator")
+    wait_for_service(f"{config.URLS['schema']}/schema",    "Schema Manager")
     wait_for_service(f"{config.URLS['llm']}/docs",         "LLM Service")
     wait_for_service(f"{config.URLS['query']}/docs",       "Query Service")
 
