@@ -26,6 +26,7 @@ class ExecuteRequest(BaseModel):
     target: str      # table name
     payload: dict = {}
     schema: dict     # current schema snapshot from Schema Manager
+    db: str = config.DEFAULT_DB  # which database to operate on
 
 
 # --- Validate + Execute (single entry point) ---
@@ -41,8 +42,8 @@ async def execute(req: ExecuteRequest):
 
     # After schema ops, push updated schema to Schema Manager
     if req.type == "schema_op" and result["ok"]:
-        schema = _read_schema()
-        await _push_schema_update(schema)
+        schema = _read_schema(req.db)
+        await _push_schema_update(req.db, schema)
 
     return result
 
@@ -50,9 +51,9 @@ async def execute(req: ExecuteRequest):
 # --- Schema reader (used by Schema Manager on startup) ---
 
 @app.get("/schema")
-async def get_schema():
+async def get_schema(db: str = config.DEFAULT_DB):
     """Read current schema directly from the database."""
-    return {"ok": True, "schema": _read_schema()}
+    return {"ok": True, "schema": _read_schema(db)}
 
 
 # --- Validation logic ---
@@ -120,9 +121,10 @@ def _run(req: ExecuteRequest) -> dict:
     action = req.action
     target = req.target
     payload = req.payload
+    db = req.db
 
     if action == "SELECT":
-        return database.execute(f"SELECT * FROM {target}")
+        return database.execute(f"SELECT * FROM {target}", db=db)
 
     elif action == "INSERT":
         values = payload.get("values", {})
@@ -130,17 +132,18 @@ def _run(req: ExecuteRequest) -> dict:
         placeholders = ", ".join("?" for _ in values)
         return database.execute(
             f"INSERT INTO {target} ({cols}) VALUES ({placeholders})",
-            tuple(values.values())
+            tuple(values.values()),
+            db=db
         )
 
     elif action == "CREATE_TABLE":
         col_defs = ", ".join(f"{col} {dtype}" for col, dtype in payload["columns"].items())
-        return database.execute(f"CREATE TABLE IF NOT EXISTS {target} ({col_defs})")
+        return database.execute(f"CREATE TABLE IF NOT EXISTS {target} ({col_defs})", db=db)
 
     elif action == "ALTER":
         errors = []
         for col, dtype in payload.get("add_columns", {}).items():
-            r = database.execute(f"ALTER TABLE {target} ADD COLUMN {col} {dtype}")
+            r = database.execute(f"ALTER TABLE {target} ADD COLUMN {col} {dtype}", db=db)
             if not r["ok"]:
                 errors.append(r["error"])
         if errors:
@@ -148,22 +151,22 @@ def _run(req: ExecuteRequest) -> dict:
         return {"ok": True}
 
     elif action == "DROP":
-        return database.execute(f"DROP TABLE IF EXISTS {target}")
+        return database.execute(f"DROP TABLE IF EXISTS {target}", db=db)
 
     return {"ok": False, "error": f"No executor for action: {action}"}
 
 
 # --- Helpers ---
 
-def _read_schema() -> dict:
+def _read_schema(db: str = config.DEFAULT_DB) -> dict:
     """Read full schema from SQLite."""
-    result = database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    result = database.execute("SELECT name FROM sqlite_master WHERE type='table'", db=db)
     if not result["ok"]:
         return {}
     schema = {}
     for row in result["rows"]:
         table = row["name"]
-        cols = database.execute(f"PRAGMA table_info({table})")
+        cols = database.execute(f"PRAGMA table_info({table})", db=db)
         if cols["ok"]:
             schema[table] = [
                 {"name": c["name"], "type": c["type"]}
@@ -172,13 +175,13 @@ def _read_schema() -> dict:
     return schema
 
 
-async def _push_schema_update(schema: dict):
+async def _push_schema_update(db: str, schema: dict):
     """Push updated schema to Schema Manager after a schema op."""
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"{config.URLS['schema']}/schema-update",
-                json=schema,
+                json={"db": db, "schema": schema},
                 timeout=3.0
             )
     except Exception:

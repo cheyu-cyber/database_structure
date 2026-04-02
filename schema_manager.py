@@ -22,8 +22,8 @@ import config
 app = FastAPI(title="Schema Manager")
 
 # --- State ---
-_subscribers: list[str] = []   # registered webhook URLs
-_schema_cache: dict = {}        # in-memory floor plan
+_subscribers: list[str] = []          # registered webhook URLs
+_schema_cache: dict[str, dict] = {}   # {db_name: {table: [cols]}}
 
 
 # --- Models ---
@@ -32,12 +32,12 @@ class SubscribeRequest(BaseModel):
 
 
 # --- Pub/Sub ---
-async def _notify_subscribers(schema: dict):
+async def _notify_subscribers(db: str, schema: dict):
     """Fire-and-forget: POST updated schema to all registered subscribers."""
     async with httpx.AsyncClient() as client:
         for url in _subscribers:
             try:
-                await client.post(url, json=schema, timeout=3.0)
+                await client.post(url, json={"db": db, "schema": schema}, timeout=3.0)
             except Exception:
                 pass  # subscriber unreachable, skip
 
@@ -45,12 +45,16 @@ async def _notify_subscribers(schema: dict):
 # --- Endpoints ---
 @app.on_event("startup")
 async def startup():
-    """Fetch initial schema from Validator (the sole DB gateway)."""
+    """Fetch initial schema for default db from Validator (the sole DB gateway)."""
     global _schema_cache
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{config.URLS['validator']}/schema", timeout=5.0)
-            _schema_cache = r.json().get("schema", {})
+            r = await client.get(
+                f"{config.URLS['validator']}/schema",
+                params={"db": config.DEFAULT_DB},
+                timeout=5.0
+            )
+            _schema_cache[config.DEFAULT_DB] = r.json().get("schema", {})
     except Exception:
         pass  # Validator not ready yet; will be populated on first schema update
 
@@ -64,20 +68,22 @@ async def subscribe(req: SubscribeRequest):
 
 
 @app.get("/schema")
-async def get_schema():
-    """Return the current cached schema."""
-    return {"ok": True, "schema": _schema_cache}
+async def get_schema(db: str = config.DEFAULT_DB):
+    """Return the cached schema for a specific database."""
+    return {"ok": True, "schema": _schema_cache.get(db, {})}
 
 
 @app.post("/schema-update")
-async def schema_update(updated_schema: dict):
+async def schema_update(payload: dict):
     """
     Webhook endpoint. Validator calls this after any schema-changing op.
+    Payload: {"db": "...", "schema": {...}}
     Updates local cache and fans out to all subscribers.
     """
-    global _schema_cache
-    _schema_cache = updated_schema
-    asyncio.create_task(_notify_subscribers(_schema_cache))
+    db = payload.get("db", config.DEFAULT_DB)
+    schema = payload.get("schema", {})
+    _schema_cache[db] = schema
+    asyncio.create_task(_notify_subscribers(db, schema))
     return {"ok": True}
 
 

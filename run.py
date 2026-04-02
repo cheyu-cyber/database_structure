@@ -61,6 +61,8 @@ def wait_for_service(url: str, name: str, retries: int = 20):
 if __name__ == "__main__":
     import config
 
+    os.makedirs(config.DB_DIR, exist_ok=True)
+
     print("Starting services...")
 
     processes = []

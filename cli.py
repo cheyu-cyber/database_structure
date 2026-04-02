@@ -32,15 +32,17 @@ def print_result(result: dict):
 
 
 def run():
+    current_db = config.DEFAULT_DB
+
     print("SQL System CLI")
     print("Commands: select <table> | insert <table> col=val ... |")
     print("          create table <table> col:TYPE ... | alter <table> add col:TYPE |")
-    print("          drop <table> | or just type naturally (LLM handles it)")
+    print("          drop <table> | use <db_name> | or just type naturally")
     print("Type 'exit' to quit.\n")
 
     while True:
         try:
-            user_input = input("> ").strip()
+            user_input = input(f"{current_db}> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nBye")
             break
@@ -51,8 +53,19 @@ def run():
             print("Bye")
             break
 
+        # Switch database
+        parts = user_input.split()
+        if parts[0].lower() == "use" and len(parts) >= 2:
+            current_db = parts[1]
+            print(f"  Switched to database: {current_db}")
+            continue
+
         try:
-            resp = httpx.post(QUERY_URL, json={"input": user_input}, timeout=30.0)
+            resp = httpx.post(
+                QUERY_URL,
+                json={"input": user_input, "db": current_db},
+                timeout=30.0
+            )
             result = resp.json()
         except httpx.ConnectError:
             print("  Error: Query Service not reachable. Is run.py running?")

@@ -28,39 +28,38 @@ import config
 app = FastAPI(title="Query Service")
 
 # --- Local schema cache, kept fresh via pub/sub ---
-_schema_cache: dict = {}
+_schema_cache: dict[str, dict] = {}   # {db_name: {table: [cols]}}
 
 
 # --- Models ---
 class QueryRequest(BaseModel):
     input: str          # raw natural language or structured command
-
-class SchemaUpdateWebhook(BaseModel):
-    # Schema Manager POSTs the full updated schema here
-    __root__: dict
+    db: str = config.DEFAULT_DB
 
 
 # --- Pub/Sub receiver ---
 @app.post("/schema-update")
-async def schema_update(updated_schema: dict):
+async def schema_update(payload: dict):
     """
     Webhook endpoint. Schema Manager calls this whenever schema changes.
-    Keeps our local cache fresh without polling.
+    Payload: {"db": "...", "schema": {...}}
     """
-    global _schema_cache
-    _schema_cache = updated_schema
+    db = payload.get("db", config.DEFAULT_DB)
+    _schema_cache[db] = payload.get("schema", {})
     return {"ok": True}
 
 
 # --- Startup: fetch schema + register as subscriber ---
 @app.on_event("startup")
 async def startup():
-    global _schema_cache
     async with httpx.AsyncClient() as client:
-        # 1. Get current schema
+        # 1. Get current schema for default db
         try:
-            r = await client.get(f"{config.URLS['schema']}/schema")
-            _schema_cache = r.json().get("schema", {})
+            r = await client.get(
+                f"{config.URLS['schema']}/schema",
+                params={"db": config.DEFAULT_DB}
+            )
+            _schema_cache[config.DEFAULT_DB] = r.json().get("schema", {})
         except Exception:
             pass
 
@@ -80,6 +79,9 @@ async def handle_query(req: QueryRequest):
     """
     Single entry point. All user input comes through here.
     """
+    db = req.db
+    schema = _schema_cache.get(db, {})
+
     request_envelope = _parse(req.input)
 
     # If we couldn't parse it, ask the LLM (async, non-blocking)
@@ -87,7 +89,7 @@ async def handle_query(req: QueryRequest):
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"{config.URLS['llm']}/suggest",
-                json={"user_input": req.input, "schema": _schema_cache},
+                json={"user_input": req.input, "schema": schema},
                 timeout=30.0
             )
             result = r.json()
@@ -95,8 +97,9 @@ async def handle_query(req: QueryRequest):
                 return {"ok": False, "reason": "Could not understand input"}
             request_envelope = result["suggestion"]
 
-    # Attach current schema snapshot for Validator
-    request_envelope["schema"] = _schema_cache
+    # Attach current schema snapshot and db name for Validator
+    request_envelope["schema"] = schema
+    request_envelope["db"] = db
 
     # Send to Validator — validates and executes in one step
     async with httpx.AsyncClient() as client:
