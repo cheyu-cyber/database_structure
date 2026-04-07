@@ -1,1 +1,4 @@
 config.py
+*API_KEY.json
+*cache*
+__pycache__/

@@ -11,12 +11,15 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import json
-import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
+from anthropic import Anthropic
 import config
 
 app = FastAPI(title="LLM Service")
+
+# Initialise the Anthropic client (module-level so it's available to the endpoint)
+anth = Anthropic(api_key=config.LLM_KEYS)
 
 
 class SuggestRequest(BaseModel):
@@ -27,8 +30,8 @@ class SuggestRequest(BaseModel):
 @app.post("/suggest")
 async def suggest(req: SuggestRequest):
     """
-    Async: sends user input + schema to Claude, returns a request envelope.
-    Non-blocking — Query Service awaits this without freezing the event loop.
+    Sends user input + schema to Claude via the Anthropic SDK,
+    returns a suggested request envelope.
     """
     schema_str = json.dumps(req.schema, indent=2)
 
@@ -47,29 +50,17 @@ Return only valid JSON with this exact shape:
   "payload": {{}}
 }}"""
 
-    body = {
-        "model": config.LLM_MODEL,
-        "max_tokens": config.LLM_MAX_TOKENS,
-        "messages": [{"role": "user", "content": prompt}]
-    }
-
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                json=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "anthropic-version": "2023-06-01",
-                },
-                timeout=30.0
-            )
-            data = resp.json()
-            text = data["content"][0]["text"]
-            suggestion = json.loads(text.strip())
-            return {"ok": True, "suggestion": suggestion}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+    try:
+        resp = anth.messages.create(
+            model=config.LLM_MODEL,
+            max_tokens=config.LLM_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        suggestion = json.loads(text.strip())
+        return {"ok": True, "suggestion": suggestion}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 if __name__ == "__main__":

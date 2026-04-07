@@ -82,7 +82,7 @@ if __name__ == "__main__":
     print("\nAll services up. Starting CLI...\n")
 
     # CLI runs in the main process
-    import cli
+    import services.cli as cli
     cli.run()
 
     # On CLI exit, terminate all services
