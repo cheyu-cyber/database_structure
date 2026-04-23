@@ -46,7 +46,6 @@ async def _notify_subscribers(db: str, schema: dict):
 @app.on_event("startup")
 async def startup():
     """Fetch initial schema for default db from Validator (the sole DB gateway)."""
-    global _schema_cache
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
