@@ -1,9 +1,13 @@
 """
-LLM Service — port 8002
+LLM Service - port 8002
 
 Async: the LLM call does not block the CLI.
 Called only when Query Service cannot parse user input directly.
 Returns a suggested request envelope.
+
+The Anthropic client is built lazily so the service still boots
+when no key is configured (e.g. in CI).  /suggest then returns
+a clean error instead of crashing at import time.
 """
 
 import sys
@@ -18,13 +22,30 @@ import config
 
 app = FastAPI(title="LLM Service")
 
-# Initialise the Anthropic client (module-level so it's available to the endpoint)
-anth = Anthropic(api_key=config.LLM_KEYS)
+_client: Anthropic | None = None
+
+
+def get_client() -> Anthropic:
+    """Build (and cache) the Anthropic client. Tests patch this."""
+    global _client
+    if _client is None:
+        if not config.LLM_KEY:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Provide it via env or "
+                "Anthropic_API_KEY.json next to config.py."
+            )
+        _client = Anthropic(api_key=config.LLM_KEY)
+    return _client
 
 
 class SuggestRequest(BaseModel):
     user_input: str
     schema: dict
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "service": "llm", "key_configured": bool(config.LLM_KEY)}
 
 
 @app.post("/suggest")
@@ -51,7 +72,8 @@ Return only valid JSON with this exact shape:
 }}"""
 
     try:
-        resp = anth.messages.create(
+        client = get_client()
+        resp = client.messages.create(
             model=config.LLM_MODEL,
             max_tokens=config.LLM_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],

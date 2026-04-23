@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
-import services.database as database
+import database
 import config
 
 app = FastAPI(title="Validator")
