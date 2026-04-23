@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+.venv
+venv
+tests/
+databases/
+*.db
+.env
+Anthropic_API_KEY.json
+pytest.ini
+README.md

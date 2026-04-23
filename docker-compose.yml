@@ -1,0 +1,80 @@
+# One container per service. Each service is independently runnable
+# (e.g. `docker compose up validator`); compose only wires their network
+# names together so config.URLS resolves to the right hostnames.
+#
+# Bring everything up:   docker compose up --build
+# Talk to query service: curl -X POST http://localhost:8000/query \
+#                            -H "Content-Type: application/json" \
+#                            -d '{"input":"select users","db":"data"}'
+
+services:
+  validator:
+    build: .
+    image: db_structure
+    container_name: db_validator
+    command: ["python", "services/validator.py"]
+    ports: ["8003:8003"]
+    environment:
+      VALIDATOR_HOST: validator
+      SCHEMA_HOST: schema_manager
+      LLM_HOST: llm_service
+      QUERY_HOST: query_service
+      DB_DIR: /app/databases
+    volumes:
+      - dbdata:/app/databases
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8003/docs', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  schema_manager:
+    build: .
+    image: db_structure
+    container_name: db_schema_manager
+    command: ["python", "services/schema_manager.py"]
+    ports: ["8001:8001"]
+    environment:
+      VALIDATOR_HOST: validator
+      SCHEMA_HOST: schema_manager
+      LLM_HOST: llm_service
+      QUERY_HOST: query_service
+    depends_on:
+      validator:
+        condition: service_healthy
+
+  llm_service:
+    build: .
+    image: db_structure
+    container_name: db_llm_service
+    command: ["python", "services/llm_service.py"]
+    ports: ["8002:8002"]
+    env_file:
+      - .env
+    environment:
+      VALIDATOR_HOST: validator
+      SCHEMA_HOST: schema_manager
+      LLM_HOST: llm_service
+      QUERY_HOST: query_service
+
+  query_service:
+    build: .
+    image: db_structure
+    container_name: db_query_service
+    command: ["python", "services/query_service.py"]
+    ports: ["8000:8000"]
+    environment:
+      VALIDATOR_HOST: validator
+      SCHEMA_HOST: schema_manager
+      LLM_HOST: llm_service
+      QUERY_HOST: query_service
+    depends_on:
+      validator:
+        condition: service_healthy
+      schema_manager:
+        condition: service_started
+      llm_service:
+        condition: service_started
+
+volumes:
+  dbdata:
