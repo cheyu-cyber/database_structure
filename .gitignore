@@ -5,3 +5,4 @@ __pycache__/
 databases/
 *.db
 .pytest_cache/
+video/sources/
